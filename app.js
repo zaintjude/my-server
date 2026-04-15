@@ -11,7 +11,7 @@ const server = http.createServer(app);
 // =====================
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Health check - IMPORTANT: Render uses this to see if your app is alive
+// Health check for Render deployment
 app.get('/health', (req, res) => {
     res.status(200).send('OK');
 });
@@ -21,17 +21,16 @@ app.get('/health', (req, res) => {
 // =====================
 const wss = new WebSocket.Server({ 
     server,
-    // Add path to ensure the handshake is specific
     path: '/' 
 });
 
+// Track active users: { "username": ws_connection }
 let clients = {};
 
 wss.on('connection', (ws, req) => {
     ws.isAlive = true;
     ws.username = null;
 
-    // Log the incoming connection for debugging in Render logs
     console.log(`📡 New connection attempt from: ${req.socket.remoteAddress}`);
 
     ws.on('pong', () => {
@@ -47,54 +46,72 @@ wss.on('connection', (ws, req) => {
             return;
         }
 
+        // 1. REGISTER USER & BROADCAST LIST
         if (data.type === 'register') {
-    if (!data.username) return;
+            if (!data.username) return;
+            
+            ws.username = data.username;
+            clients[data.username] = ws;
+            
+            console.log(`✅ User registered: ${data.username}`);
+            
+            // Send the full list of online users to EVERYONE
+            // This ensures the "Messenger" sidebar stays updated
+            broadcastUserList();
+            return;
+        }
 
-    ws.username = data.username;
-    clients[data.username] = ws;
-
-    console.log(`✅ User registered: ${data.username}`);
-    
-    // ADD THIS: Send the full list of online usernames to everyone
-    broadcast({
-        type: 'user_list',
-        users: Object.keys(clients)
-    });
-    return;
-}
-
-        // Handle private messages and signaling
+        // 2. PRIVATE MESSAGING & WEBRTC SIGNALING
+        // We route messages only to the specific target
         if (data.type === 'message' || ['offer', 'answer', 'candidate'].includes(data.type)) {
             const target = data.target;
             if (target && clients[target] && clients[target].readyState === WebSocket.OPEN) {
                 clients[target].send(JSON.stringify(data));
+            } else {
+                console.log(`⚠️ Target ${target} is offline.`);
             }
         }
     });
 
+    // 3. CLEANUP ON DISCONNECT
     ws.on('close', () => {
         if (ws.username) {
             console.log(`🔴 User disconnected: ${ws.username}`);
             delete clients[ws.username];
-            broadcast({
-                type: 'user_status',
-                username: ws.username,
-                status: 'offline'
-            });
+            
+            // Update the sidebar for everyone else
+            broadcastUserList();
         }
+    });
+
+    ws.on('error', (err) => {
+        console.error(`WebSocket Error:`, err);
     });
 });
 
-function broadcast(data) {
-    const msg = JSON.stringify(data);
+// =====================
+// HELPER FUNCTIONS
+// =====================
+
+/**
+ * Sends the current list of online usernames to all connected clients
+ */
+function broadcastUserList() {
+    const userListPayload = JSON.stringify({
+        type: 'user_list',
+        users: Object.keys(clients)
+    });
+
     wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(msg);
+            client.send(userListPayload);
         }
     });
 }
 
-// Heartbeat system (30s check)
+/**
+ * Heartbeat System: Check every 30s if clients are still responsive
+ */
 const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
         if (ws.isAlive === false) {
@@ -106,17 +123,20 @@ const interval = setInterval(() => {
     });
 }, 30000);
 
+wss.on('close', () => {
+    clearInterval(interval);
+});
+
 // =====================
 // START SERVER
 // =====================
-// Render uses process.env.PORT. 0.0.0.0 is critical for Render to route traffic!
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`
-    🚀 PrimeChat Server Running
+    🚀 PrimeChat Messenger Server Running
     ---------------------------
     Port: ${PORT}
-    Environment: ${process.env.NODE_ENV || 'development'}
+    Static Path: ${path.join(__dirname, '../public')}
     `);
 });
