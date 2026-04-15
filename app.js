@@ -48,18 +48,20 @@ wss.on('connection', (ws, req) => {
         }
 
         if (data.type === 'register') {
-            if (!data.username) return;
-            ws.username = data.username;
-            clients[data.username] = ws;
-            console.log(`✅ User registered: ${data.username}`);
-            
-            broadcast({
-                type: 'user_status',
-                username: data.username,
-                status: 'online'
-            });
-            return;
-        }
+    if (!data.username) return;
+
+    ws.username = data.username;
+    clients[data.username] = ws;
+
+    console.log(`✅ User registered: ${data.username}`);
+    
+    // ADD THIS: Send the full list of online usernames to everyone
+    broadcast({
+        type: 'user_list',
+        users: Object.keys(clients)
+    });
+    return;
+}
 
         // Handle private messages and signaling
         if (data.type === 'message' || ['offer', 'answer', 'candidate'].includes(data.type)) {
